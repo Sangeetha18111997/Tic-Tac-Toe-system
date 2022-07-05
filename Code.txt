@@ -1,0 +1,1715 @@
+mbed LPC1768 code:
+
+ //*** Lab4 ***
+/***********************************************************************************************
+    File Name:  ELNC6007SKLab4.c
+    Author:     KSangeetha
+    Date:       18/12/2020
+    Modified:   None
+     Fanshawe College, 2016
+
+   Description: A tic tac toe game system where the serial communication of data of the player playing manually is done from mbed LPC1768 to pic18f45k22 and based 
+		on the pushbutton conditions on mbed, the player value is placed from mbed to Pic18f45k22 and depending on the game, win, draw, reset conditions are 
+		set accordingly and sent to Pic18f45k22
+**********************************************************************************************/
+
+// Preprocessor ===================================================================
+
+#include "mbed.h"
+#include <stdio.h>
+#include <string.h>
+// Constants ======================================================================
+
+#define TRUE 1
+#define FALSE 0
+
+#define HIGH 1
+#define LOW 0
+
+#define ROW 3
+#define COL 3                   
+#define ADDRESS 888
+#define PLAYER1 0
+#define PLAYER2 1
+#define SIZE 4
+
+#define THREESEC 3
+#define FIVESEC 5
+
+#define CONTROLLER 1
+#define MYADDY 888
+
+#define CMDSTMT 0
+#define ADDYTO 1
+#define ADDYFM 2
+
+#define BUFSIZE 50
+#define TOKENSIZE 10
+#define TURN 30
+#define SZ 10
+
+#define PLYPMT ("PLYPMT")
+#define GRESET ("GRESET")
+#define GBROW 3
+#define GBCOL 4
+#define GBCHAR 5
+
+#define GRES 3
+#define GWIN 4
+#define GAMEND ("GAMEND")
+
+
+// Global Variables ===============================================================
+
+char row=0,col=0;                                    
+char playerPlacement=FALSE; //flag when the player placement uis being done on the game board
+char flagpX=0; //play flag which is used to set or reset if the game is being played or not for player X
+char flagpO=0; //play flag which is used to set or reset if the game is being played or not for player O
+char flagreset=0; //reset flag which is used to set or reset when the whole program is to be set or reset for both the players X and O
+char flagready=0; //ready flag which is used to tell the user that the game is ready to be started for both the players X and O
+int count=0;             
+char rowCnt=0;
+char colCnt=0;
+char pb3Pressed=0;
+char resetTime=0;
+char resetFlag=FALSE;
+char plyplace[BUFSIZE];
+char player=0;  
+char countTimer=0;
+char yn=0;
+char sentenceReady=FALSE;
+char *tokens[TOKENSIZE];   
+char rxBuf[BUFSIZE];
+char *pbuf=rxBuf;
+char csFlag=FALSE;
+char hold=0;
+char xFlag=0;
+char oFlag=0;
+char drawFlag=0;
+char gamereset[BUFSIZE];
+char ply[SZ]={"PLYPMT"};
+char rst[SZ]={"GRESET"};
+char end[SZ]={"GAMEND"};
+
+Serial pc(USBTX,USBRX,9600);
+Serial pic(p13,p14,9600);
+DigitalIn PB1(p5);
+DigitalIn PB2(p6);
+DigitalIn PB3(p7);
+DigitalIn PB4(p8);
+Ticker secCount;
+
+//Data structures:
+typedef struct gameBoard    //creating data structure for game Board
+{
+    char ticTacToe[ROW][COL]; //an array where the values indicate either 'X', 'O' or nothing is being placed
+    char player;       //variable that tracks which player is active currently
+    char turnCounter;   //variable that tracks how many turns have been taken in each game
+    char rowCnt;
+}gameBoard_t;
+
+
+typedef struct ticTacToeSystem  //Data structure for Tic Tac Toe system
+{
+    char address[SIZE]; //variable that holds the last three digits of the student Id
+    gameBoard_t gBoard;        //its a data structure type above named 'ttt'
+    char select; //a variable that holds the value of either row or column depending on the user selection
+}ticTacToeSystem_t;
+ticTacToeSystem_t ttt888;
+
+/***initializeTtt **************************************************************
+Author:     KSangeetha
+Date:       16/10/2020
+Modified:   None
+Desc:       initializing the contents in the tic tac toe datastructure to zero
+Input:      None
+Returns:    None
+**********************************************************************************/
+void initializeTtt(void)
+{
+    for(row=0;row<ROW;row++)
+    {
+        for(col=0;col<COL;col++)
+        {   
+            ttt888.gBoard.ticTacToe[row][col]=0XFF;  // initializing row and column for each array to 0XFF
+        }
+    }
+    ttt888.gBoard.player=PLAYER1; //if player1 is choosen
+    ttt888.gBoard.turnCounter=0; //turn counter increments after each turn 
+    ttt888.select=0;  //initially the select is row
+}
+//eo initializeTtt::
+
+/*** checkSum: ***********************************************************
+Author:     CTalbot
+Date:       13/11/2020
+Modified:   KSangeetha 
+Desc:       Checksum calculation to determine if the transmitted message confirms with the received message
+Input:      None
+Returns:    None
+**********************************************************************************/                 
+char calculateChecksum(char*ptr)
+{
+    char cs=0;
+    while(*ptr) //if there is data inside the memory
+    {
+        cs+=*ptr;
+        ptr++;
+    }
+    return cs;
+}//eo calculateChecksum::
+
+/***collectSentence: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       The function where the information sent from the pic side is collected and stored in an array of variable
+Input:      None
+Returns:    None
+**********************************************************************************/
+
+void collectSentence()
+{
+    if(pic.readable())
+    {
+        hold=pic.getc();
+        if(hold=='$')
+        {
+            pbuf=rxBuf;
+        }
+        if(hold=='^')
+        {
+            sentenceReady=TRUE;
+            *(pbuf+1)=0x00;
+        }
+        *pbuf=hold;
+        pbuf++;
+    }   
+}//eo collectSentence::
+
+/***validateSentence: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       Validation of sentence is done to check if the new checksum and the received checksum are similar
+Input:      None
+Returns:    None
+**********************************************************************************/
+char validateSentence(char *ptr)
+{            
+    char rcs=0,ncs=0;
+    int count=strlen(ptr);
+    while(!csFlag)
+    {
+        if(*(ptr+count)=='^')
+        {
+            *(ptr+count)=0x00;
+        }
+        if(*(ptr+count)==',')
+        {
+            *(ptr+count)=0x00;
+            rcs=atoi(ptr+count+1);
+            csFlag=TRUE;
+        }
+        count--;
+    }
+    ncs=calculateChecksum(rxBuf);
+    if(ncs==rcs)
+    {
+        return TRUE;
+    } 
+    else
+    {
+        return FALSE;
+    }
+}//eo validateSentence::
+
+/***parseSentence: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       Eliminating the delinating characters and assigning tokens to the required data from the sentence sent from the pic side
+Input:      None
+Returns:    None
+**********************************************************************************/
+void parseSentence(char *ptr)
+{
+    char insert=0;
+    while(*ptr)
+    {
+        if(*ptr=='$'||*ptr==',')
+        {
+            *ptr=0x00;
+            tokens[insert]=ptr+1;
+            insert++;
+        }
+        ptr++;
+    }
+}//eo parseSentence::
+
+
+/***increment******************************************************
+Author:     KSangeetha
+Date:       16/10/2020     
+Modified:   None
+Desc:       Increment operation for row and column
+Input:      None
+Returns:    None
+**********************************************************************************/
+void increment(void)  //incrementing the row and column
+{
+    if(ttt888.select==0) //if row is selected
+    {
+        rowCnt++;
+        if(rowCnt>2)
+        {
+            rowCnt=0;
+        }   
+        row=rowCnt;
+    }
+    if(ttt888.select==1) //if col is selected, incrementing the col count until the col is 2 and if the col count is greater than 2, then the col count is assigned to 0
+    {
+        colCnt++;
+        if(colCnt>2) 
+        {
+            colCnt=0;
+        }
+        col=colCnt;
+    } 
+}
+//eo increment function::
+
+/***decrement******************************************************
+Author:     KSangeetha
+Date:       16/10/2020     
+Modified:   None
+Desc:       Decrement operation for row and column
+Input:      None
+Returns:    None
+**********************************************************************************/
+void decrement(void) //decrement function for row and column
+{
+    if(ttt888.select==0) //if row is selected
+    {
+        rowCnt--;
+        if(rowCnt<=0)
+        {
+            rowCnt=2;
+        }
+        row=rowCnt;
+    }
+    if(ttt888.select==1)  //if col is selected, decrement the col count until the col is 0 and if the col count is lesser than 2, then the col count is assigned to 2
+    {
+        colCnt--;
+        if(colCnt<=0)
+        {
+            colCnt=2;
+        }
+        col=colCnt;
+        //eo if::  
+    }
+}//eo decrement function::
+
+/***enter******************************************************
+Author:     KSangeetha
+Date:       16/10/2020    
+Modified:   None
+Desc:       Enter button operation to select particular row and column and then assigning the character based on the player inside the array and send data of information to the pic side 
+Input:      None
+Returns:    None
+**********************************************************************************/
+void enter(void)  //enter function is used to select the particular row and column required and assign the value into that particular array
+{
+    ttt888.select=!ttt888.select;
+    pb3Pressed++;       
+    if(pb3Pressed==2)//created a global variable gl and assigned it to 0 initially. When the PB3 is pressed 2 times, then particular row and column is selected as required and is assigned with X or O in the array depending on the player condition
+    {       
+        playerPlacement=TRUE; 
+        pb3Pressed=0; 
+        if(ttt888.gBoard.player==PLAYER1)
+        {   
+            if(ttt888.gBoard.ticTacToe[row][col]==0xFF)
+            {
+                ttt888.gBoard.ticTacToe[row][col]='X';
+                sprintf(plyplace,"$PLYPMT,%i,%i,%i,%i,%c\0",CONTROLLER,MYADDY,row,col,'X');
+                sprintf(plyplace,"%s,%i^\0",plyplace,calculateChecksum(plyplace));
+                pc.printf("\033[20;25H%s",plyplace);
+                pic.printf("%s",plyplace);
+                ttt888.gBoard.turnCounter++;
+                playerPlacement=0;
+                ttt888.gBoard.player=!ttt888.gBoard.player;
+             }
+        }
+        if(ttt888.gBoard.player==PLAYER2)
+        {
+            if(ttt888.gBoard.ticTacToe[row][col]==0xFF)
+            {
+                ttt888.gBoard.ticTacToe[row][col]='O';
+                sprintf(plyplace,"$PLYPMT,%i,%i,%i,%i,%c\0",CONTROLLER,MYADDY,row,col,'O');
+                sprintf(plyplace,"%s,%i^\0",plyplace,calculateChecksum(plyplace));
+                pc.printf("\033[20;25H%s",plyplace);
+                pic.printf("%s",plyplace);
+                ttt888.gBoard.turnCounter++;
+                playerPlacement=0;  
+                ttt888.gBoard.player=!ttt888.gBoard.player; 
+            }
+        }   
+    }     
+}//eo enter::
+
+
+/***mode******************************************************
+Author:     KSangeetha
+Date:       23/10/2020    
+Modified:   None
+Desc:       Function when both enter and push button is being pressed, the whole system will be reinitialized
+Input:      None
+Returns:    None
+**********************************************************************************/
+void mode(void)
+{ 
+    playerPlacement=FALSE;
+    flagpX=FALSE;//when pushbuttons 3 and 4 are pressed, then play flag is set to reset
+    flagpO=FALSE;
+    resetFlag=TRUE;
+    if(resetTime>=THREESEC)
+    {
+        resetTime=0;
+        resetFlag=FALSE;
+        sprintf(gamereset,"$GRESET,%i,%i,%c\0",CONTROLLER,MYADDY,'Y');
+        sprintf(gamereset,"%s,%i^\0",gamereset,calculateChecksum(gamereset));
+        pc.printf("\033[23;25H%s",gamereset);
+        pic.printf("%s",gamereset);
+        initializeTtt();//initialize the whole system
+    }
+}//eo mode::    
+
+/***pbState******************************************************
+Author:     KSangeetha
+Date:       23/10/2020     
+Modified:   None
+Desc:       Pushbutton operation in which increment, decrement and enter functions are called respective to the push button press
+Input:      None
+Returns:    None
+**********************************************************************************/
+void pbState(void)
+{
+    if(!PB1)
+    {
+       increment();
+    }
+    else if(!PB2)
+    {
+        decrement();
+    }
+    else if(!PB3)
+    {
+        enter();
+    }
+}//eo pbState
+
+                  
+/***updateDisplay : **************************************************************
+Author:     KSangeetha
+Date:       23/10/2020
+Modified:   None
+Desc:       Displaying of the functions on the output screen.
+Input:      None
+Returns:    None
+**********************************************************************************/
+
+void updateDisplay(void)
+{ 
+    pc.printf("\033[0;0HController\r\n");
+    if(ttt888.gBoard.player==PLAYER1)
+    {
+        pc.printf("\033[2;0HPlayer:X\t\r\n");
+    }
+    else
+    {
+        pc.printf("\033[2;0HPlayer:O\t\r\n");
+    }
+
+    pc.printf("\033[2;25HTurn Count:%d\r\n",ttt888.gBoard.turnCounter);
+
+    if(ttt888.select==0) //if select is 0, then row is selected
+    {
+        pc.printf("\033[3;0HRow\r\n");
+    }
+    else //if select is 1, then column is selected
+    {
+        pc.printf("\033[3;0HCol\r\n");
+    }
+    if(ttt888.select==0)
+    {
+        pc.printf("\033[4;0HSelect:%d\r\n",rowCnt); //if select is 0, then row count would be printed in select
+    }
+    else
+    {
+        pc.printf("\033[4;0HSelect:%d\r\n",colCnt);//if select is 1, then col count would be printed in select
+    }
+    pc.printf("\033[6;25HC  O  L  U  M  N\r\n");
+    pc.printf("\033[8;25H0 \033[8;50H1\033[8;75H2\r\n");
+    pc.printf("\033[9;15H0 \033[9;25H%c\t\t| \033[9;50H%c\t\t| \033[9;75H%c \r\n",ttt888.gBoard.ticTacToe[0][0],ttt888.gBoard.ticTacToe[0][1],ttt888.gBoard.ticTacToe[0][2]);
+    pc.printf("\033[11;5HR\t\t------------------------------------------------------------------------------\r\n");
+    pc.printf("\033[13;5HO\033[13;15H1 \033[13;25H%c\t\t| \033[13;50H%c\t\t| \033[13;75H%c \r\n",ttt888.gBoard.ticTacToe[1][0],ttt888.gBoard.ticTacToe[1][1],ttt888.gBoard.ticTacToe[1][2]);
+    pc.printf("\033[15;5HW\t\t------------------------------------------------------------------------------\r\n");
+    pc.printf("\033[17;15H2 \033[17;25H%c\t\t| \033[17;50H%c\t\t| \033[17;75H%c \r\n",ttt888.gBoard.ticTacToe[2][0],ttt888.gBoard.ticTacToe[2][1],ttt888.gBoard.ticTacToe[2][2]);
+}   //eo updateDisplay::
+
+/***gameEnd : **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       The function where required sentences are printed when the players win or if the game is draw condition
+Input:      None
+Returns:    None
+**********************************************************************************/
+void gameEnd(void)
+{
+    if(xFlag==TRUE)
+    {
+        pc.printf("Congratulations, playerX has won");
+    }
+    if(oFlag==TRUE)
+    {
+        pc.printf("Congratulations, player O has won");
+    }
+    if(drawFlag==TRUE)
+    {
+        pc.printf("The match is draw");
+    }
+}//eo gameEnd::
+
+/***executeSentence: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       Execution of a sentence into another microcontroller 
+Input:      None
+Returns:    None
+**********************************************************************************/
+void executeSentence()
+{
+    if(atoi(tokens[ADDYTO])==CONTROLLER)
+    {
+        if(atoi(tokens[ADDYFM])==ADDRESS)
+        {
+            if(strcmp(tokens[CMDSTMT],ply)==0)//for playerplacement condition
+            {
+                ttt888.gBoard.ticTacToe[atoi(tokens[GBROW])][atoi(tokens[GBCOL])]=*tokens[GBCHAR];
+                ttt888.gBoard.turnCounter++;
+            }
+            if(strcmp(tokens[CMDSTMT],end)==0)//for game end condition
+            {
+                if(*(tokens[GRES])=='W') //if the game is won
+                {
+                    if(*(tokens[GWIN])=='X')//if the game is won and if the player is X
+                    {
+                        xFlag=TRUE;
+                    }
+                    else if(*(tokens[GWIN])=='O')//if the game is won and if the player is O
+                    {
+                        oFlag=TRUE;
+                    }
+                }
+                if(*(tokens[GRES])=='D') //if the match is draw
+                {
+                    if(*(tokens[GWIN])=='Y')
+                    {
+                        drawFlag=TRUE;
+                    }
+                }
+            }
+        }
+    }
+}//eo executeSentence::
+
+/***countTime: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       The functions of reset condition where if the resetflag is true, it increments reset time 
+Input:      None
+Returns:    None
+**********************************************************************************/
+void countTime()
+{
+    if(resetFlag)
+    {
+        resetTime++;
+    }
+}//eo countTime::
+    
+/*********************************************************************************
+***** MAIN FUNCTION **************************************************************
+**********************************************************************************/
+
+int main()
+{
+    pic.attach(&collectSentence);
+    secCount.attach(&countTime,1.0);//calling of a count Time function which runs for 1sec interval
+    initializeTtt();
+    while(1)
+    {
+        if(!PB1)
+        {
+            increment();
+        }
+        if(!PB2)
+        {
+            decrement();
+        }
+        if(!PB3)
+        {
+            enter();
+        }
+        if(!PB3 && !PB4)
+        {
+          mode();
+        }  
+        gameEnd(); 
+        if(sentenceReady==TRUE)
+        { 
+            sentenceReady=FALSE;
+            validateSentence(rxBuf);
+            parseSentence(rxBuf);
+            executeSentence();   
+        }
+        updateDisplay();
+    }//eo while::      
+}//eo main::
+
+
+
+PIC18F45K22 CODE:
+
+//*** Lab4 ***
+/***********************************************************************************************
+    File Name:  ELNC6007SKLab4.c
+    Author:     KSangeetha
+    Date:       18/12/2020
+    Modified:   None
+     Fanshawe College, 2016
+
+   Description: A Tic Tac Toe game system where the turn timer is used to count 30sec interval within which the player has to be placed if not, automatic placement of player will be done in the first available blank. Also the communication sentence is printed using sprintf for 5 second interval when the player palcement is done
+***********************************************************************************************/
+
+// Preprocessor ===================================================================
+
+#include "pragmas.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <p18f45k22.h>
+#include <delays.h>
+#include "usart.h"
+#include <string.h>
+// Constants ======================================================================
+
+#define TRUE 1
+#define FALSE 0
+
+#define TMR0FLAG INTCONbits.TMR0IF
+#define TMR01SEC 0x0BDC
+
+#define LED12OP TRISCbits.TRISC0=0                //Set the output pin to control LEDs
+#define LED12IP TRISCbits.TRISC0=1               //set the input pin to LEDs off
+#define LED34OP TRISCbits.TRISC3=0                //Set the output pin to control LEDs
+#define LED34IP TRISCbits.TRISC3=1               //set the input pin to LEDs off
+#define LED56OP TRISDbits.TRISD2=0                //Set the output pin to control LEDs
+#define LED56IP TRISDbits.TRISD2=1               //set the input pin to LEDs off
+#define LED78OP TRISCbits.TRISC1=0                //Set the output pin to control LEDs
+#define LED78IP TRISCbits.TRISC1=1               //set the input pin to LEDs off          
+#define LED910OP TRISDbits.TRISD0=0                //Set the output pin to control LEDs
+#define LED910IP TRISDbits.TRISD0=1               //set the input pin to LEDs off
+#define LED1112OP TRISDbits.TRISD3=0                //Set the output pin to control LEDs
+#define LED1112IP TRISDbits.TRISD3=1               //set the input pin to LEDs off
+#define LED1314OP TRISCbits.TRISC2=0                //Set the output pin to control LEDs
+#define LED1314IP TRISCbits.TRISC2=1               //set the input pin to LEDs off
+#define LED1516OP TRISDbits.TRISD1=0                //Set the output pin to control LEDs
+#define LED1516IP TRISDbits.TRISD1=1               //set the input pin to LEDs off
+#define LED1718OP TRISCbits.TRISC4=0                //Set the output pin to control LEDs
+#define LED1718IP TRISCbits.TRISC4=1               //set the input pin to LEDs off
+
+#define LED1ON LATCbits.LATC0=0;      //LED1 ON, LED2 OFF
+#define LED2ON LATCbits.LATC0=1;      //LED2 OFF, LED1 ON
+#define LED3ON LATCbits.LATC3=0;      //LED3 ON, LED4 OFF
+#define LED4ON LATCbits.LATC3=1;      //LED3 OFF, LED4 ON
+#define LED5ON LATDbits.LATD2=0;      //LED5 ON, LED6 OFF
+#define LED6ON LATDbits.LATD2=1;      //LED5 OFF, LED6 ON
+#define LED7ON LATCbits.LATC1=0;      //LED7 ON, LED8 OFF
+#define LED8ON LATCbits.LATC1=1;      //LED7 OFF, LED8 ON
+#define LED9ON LATDbits.LATD0=0;      //LED9 ON, LED10 OFF
+#define LED10ON LATDbits.LATD0=1;     //LED9 OFF, LED10 ON
+#define LED11ON LATDbits.LATD3=0;     //LED11 ON, LED12 OFF
+#define LED12ON LATDbits.LATD3=1;     //LED11 OFF, LED12 ON
+#define LED13ON LATCbits.LATC2=0;     //LED13 ON, LED14 OFF
+#define LED14ON LATCbits.LATC2=1;     //LED13 OFF, LED14 ON
+#define LED15ON LATDbits.LATD1=0;     //LED15 ON, LED16 OFF
+#define LED16ON LATDbits.LATD1=1;     //LED15 OFF, LED16 ON
+#define LED17ON LATCbits.LATC4=0;     //LED17 ON, LED18 OFF
+#define LED18ON LATCbits.LATC4=1;     //LED17 OFF, LED18 ON
+
+#define HIGH 1
+#define LOW 0
+
+#define ROW 3
+#define COL 3                   
+#define COUNT 4
+#define ONESEC 4
+#define ADDRESS 888
+#define SIZE 4
+#define SZ 10
+#define PLAYER1 0
+#define PLAYER2 1
+
+#define MIN 60
+#define SEC 60
+#define THREESEC 3
+#define FIVESEC 5
+
+#define CONTROLLER 1
+#define MYADDY 888
+#define CMDSTMT 0
+#define ADDYTO 1
+#define ADDYFM 2
+#define BUFSIZE 50
+#define TURN 30
+
+#define RXBYTE	RCREG2
+#define RC2FLAG	PIR3bits.RC2IF
+#define TOKENSIZE 10
+
+#define RESET 0
+#define ENABLED 1
+#define LOW 0
+#define HIGH 1
+
+#define PLYPMT ("PLYPMT")
+#define GBROW 3
+#define GBCOL 4
+#define GBCHAR 5
+#define GRESET ("GRESET")
+#define USRSEL ("USRSEL")
+
+// Global Variables ===============================================================
+
+char pbstate=FALSE;
+char row=0,col=0;                                    
+char playerPlacementX=FALSE; //flag when the player placement uis being done on the game board
+char playerPlacementO=FALSE;
+char winFlagX=0; //winflag which is used to set or reset if the win condition is true or false for player X
+char winFlagO=0; //winflag which is used to set or reset if the win condition is true or false for player O
+char flagpX=0; //play flag which is used to set or reset if the game is being played or not for player X
+char flagpO=0; //play flag which is used to set or reset if the game is being played or not for player O
+char flagreset=0; //reset flag which is used to set or reset when the whole program is to be set or reset for both the players X and O
+char flagready=0; //ready flag which is used to tell the user that the game is ready to be started for both the players X and O
+char count=0;              
+char rowCnt=0;
+char colCnt=0;
+char turn=0;
+char pb3Pressed=0;
+char min=0;
+char sec=0;
+char secCount=0;
+char hold=0;
+char countTimer=0; //used to count 30 seconds for the players to be placed
+char cnt=0;
+char x1Flag=0;// when automatic placement of players is done, this will set high
+char player=0;
+char *tokens[TOKENSIZE];  
+char sentenceReady=FALSE;
+char plyplace[BUFSIZE];
+char gameend[BUFSIZE];
+char yn=0;
+char winner=0;
+char gameResult=0;
+char rxBuf[BUFSIZE];
+char *pbuf=rxBuf;
+char ply[SZ]={"PLYPMT"};
+char rst[SZ]={"GRESET"};
+char gameendFlag=FALSE;
+char resetFlag=0;
+
+// Data structures
+typedef struct gameBoard    //creating data structure for game Board
+{
+	char ticTacToe[ROW][COL]; //an array where the values indicate either 'X', 'O' or nothing is being placed
+	char player;       //variable that tracks which player is active currently
+	char turnCounter;   //variable that tracks how many turns have been taken in each game
+	char winFlagX;      //This is either true or false depending on the win condition
+	char winFlagO;
+	char min;
+	char sec;
+	char rowCnt;
+}gameBoard_t;
+
+
+typedef struct ticTacToeSystem  //Data structure for Tic Tac Toe system
+{
+   	char address[SIZE]; //variable that holds the last three digits of the student Id
+    gameBoard_t gBoard;        //its a data structure type above named 'ttt'
+	char select; //a variable that holds the value of either row or column depending on the user selection
+	int time;    //a variable that holds minutes and seconds
+	char status; //a variable that tracks if the game is in use or ready for the new game or the other status variables
+	char turnTime;
+}ticTacToeSystem_t;
+ticTacToeSystem_t ttt888;
+
+/***initializeTtt **************************************************************
+Author:		KSangeetha
+Date:		16/10/2020
+Modified:	None
+Desc:		initializing the contents in the tic tac toe datastructure to zero
+Input: 		None
+Returns:	None
+**********************************************************************************/
+void initializeTtt(void)
+{
+	strcpy(ttt888.address[0],'888');
+	for(row=0;row<ROW;row++)
+	{
+		for(col=0;col<COL;col++)
+		{	
+			ttt888.gBoard.ticTacToe[row][col]=0xFF;  // initializing row and column for each array to 0XFF
+		}
+	}
+	ttt888.gBoard.player=PLAYER1; //if player1 is choosen
+	ttt888.gBoard.turnCounter=0; //turn counter increments after each turn 
+	ttt888.gBoard.winFlagX=0; // initially winFlag is false
+	ttt888.gBoard.winFlagO=0;
+	ttt888.select=0;  //initially the select is row
+	ttt888.gBoard.min=0; //time is 0 initially
+	ttt888.gBoard.sec=0;
+	ttt888.status=0; //status is 0 initially
+	ttt888.turnTime=TURN;
+}
+//eo initializeTtt::
+
+//interrupts
+
+/***configInterrupts: ******************************************************
+Author:     KSangeetha
+Date:		11/12/2020		
+Modified:	None
+Desc:		Configuration of interrupts
+Input: 		None
+Returns:	None
+**********************************************************************************/
+void configInterrupts(void)
+{
+	//Receiver 2 Interrupts on, no priority reset
+	PIR3bits.RC2IF=RESET;
+	PIE3bits.RC2IE=ENABLED;
+
+	//Enabled all interrupts, global control bits
+	INTCON|=0xC0;
+}//eo configInterrupts
+
+void isr();
+
+#pragma code vectorHighInterrupt=0X008
+void vectorHighInterrupt()
+{
+	_asm
+		GOTO isr
+	_endasm
+}
+#pragma code 
+
+// Functions ======================================================================
+
+/*** set_osc_p18f45k22_4MHz: *****************************************************
+Author:     KSangeetha
+Date:		16/10/2020		
+Modified:	None
+Desc:		Sets the internal Oscillator of the Pic 18F45K22 to 4MHz.
+Input: 		None
+Returns:	None
+**********************************************************************************/
+void set_osc_p18f45k22_4MHz(void)
+{
+	OSCCON =  0x52;					// Sleep on slp cmd, HFINT 4MHz, INT OSC Blk
+	OSCCON2 = 0x04;					// PLL No, CLK from OSC, MF off, Sec OSC off, Pri OSC
+	OSCTUNE = 0x80;					// PLL disabled, Default factory freq tuning
+    while (OSCCONbits.HFIOFS != 1); 	// wait for osc to become stable
+}
+//eo: set_osc_p18f45k22_4MHz:: ***************************************************
+
+/*** portConfig: **************************************************************
+Author:		KSangeetha
+Date:		16/10/2020
+Modified:	None
+Desc:		Configure the ports.
+Input: 		None
+Returns:	None
+**********************************************************************************/
+void portConfig(void)
+{
+	//PORT A
+	LATA=0x00; 
+   	ANSELA=0x00; //RA4, RA5, RA6, RA7 is digital 
+  	TRISA=0xFF;  //RA4, RA5, RA6, RA7 is input
+  
+  	//PORT B
+	LATB=0x00;    
+  	ANSELB=0x00;  
+  	TRISB=0xFF;   
+  
+  	//PORT C
+	LATC=0x00;   
+  	ANSELC=0x00;  //LED's are digital 
+  	TRISC=0XBF;   //RC0, RC1, RC2, RC3, RC4 are connected to LED's 
+
+  	//PORT D
+  	LATD=0x00;    
+  	ANSELD=0x00;  //LED's are digital
+  	TRISD=0xBF;   //RD0, RD1, RD2, RD3 are connected to LED's
+}
+
+/*** calculateCheckSum: ***********************************************************
+Author:     CTalbot
+Date:       13/11/2020
+Modified:   KSangeetha 
+Desc:       Checksum calculation to determine if the transmitted message confirms with the received message
+Input:      None
+Returns:    None
+**********************************************************************************/					
+char calculateChecksum(char*ptr)
+{
+	char cs=0;
+	while(*ptr) //if there is data inside the memory
+	{
+		cs+=*ptr;
+		ptr++;
+	}
+	return cs;
+}//eo calculateChecksum::
+
+/***serialConfig: ******************************************************
+Author:     KSangeetha
+Date:		16/10/2020		
+Modified:	None
+Desc:		Sets the internal Oscillator of the Pic 18F45K22 to 4MHz.
+Input: 		None
+Returns:	None
+**********************************************************************************/
+void serialConfig(void)
+{
+	SPBRG1=25;
+	RCSTA1=0X90;
+	TXSTA1=0X26;
+	BAUDCON1=0X40;
+
+	
+	SPBRG2=25;//0001 0010 Baudrate is 9600 for serial port2
+	TXSTA2=0X26;   //Enables asynchronous serial transmitter
+	RCSTA2=0X90;  //Enables asynchronous serial receiver
+	BAUDCON2=0X40;	//Baudrate 9600Hz
+	
+}//eo serialConfig::
+
+
+/***collectSentence: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       This is the function that collects the information from the microcontroller and stores in an array
+Input:      None
+Returns:    None
+**********************************************************************************/
+
+void collectSentence()
+{
+	if(PIR3bits.RC2IF)
+	{
+		hold=RXBYTE;
+		if(hold=='$')
+		{
+			pbuf=rxBuf;
+		}
+		if(hold=='^')
+		{
+			*(pbuf+1)=0x00;
+			sentenceReady=TRUE;
+		}
+		*pbuf=hold;
+		pbuf++;
+	}	
+}//eo collectSentence::
+
+
+/***validateSentence: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       Validation of sentence is done to check if the recieved checksum and new checksum are similar
+Input:      None
+Returns:    None
+**********************************************************************************/
+char validateSentence(char *ptr)
+{            
+    char rcs=0,ncs=0,csFlag=FALSE;
+    unsigned char count=strlen(ptr);
+    while(!csFlag)
+    {
+        if(*(ptr+count)=='^')
+        {
+            *(ptr+count)=0x00;
+        }
+        if(*(ptr+count)==',')
+        {
+            *(ptr+count)=0x00;
+            rcs=atoi(ptr+count+1);
+            csFlag=TRUE;
+        }
+        count--;
+	    ncs=calculateChecksum(rxBuf);
+	    if(ncs==rcs)
+	    {
+	        return TRUE;
+	    }
+	    else
+	    {
+	        return FALSE;
+	    }
+	}
+}//eo validateSentence::
+
+/***parseSentence: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       Eliminating the delinating characters and assigning tokens to the required sentence
+Input:      None
+Returns:    None
+**********************************************************************************/
+void parseSentence(char *ptr)
+{
+    char insert=0;
+    while(*ptr)
+    {
+        if(*ptr=='$'||*ptr==',')
+        {
+            *ptr=0x00;
+            tokens[insert]=ptr+1;
+            insert++;
+        }
+        ptr++;
+    }
+}//eo parseSentence::
+
+
+/***resetTMR0 **************************************************************
+Author:		KSangeetha
+Date:		16/10/2020
+Modified:	None
+Desc:		Resets timmer to zero
+Input: 		None
+Returns:	None
+**********************************************************************************/
+void resetTMR0(int count)
+{
+	TMR0FLAG=FALSE;
+	TMR0H=count>>8;//the count is shifted to get the higher bits from 4 to 7
+	TMR0L=count;
+}//eo resetTMR0::
+
+/***configTMR0 **************************************************************
+Author:		KSangeetha
+Date:		16/10/2020
+Modified:	None
+Desc:		Configure the ports.
+Input: 		None
+Returns:	None
+**********************************************************************************/
+void configTMR0(int count)
+{
+	resetTMR0(count);
+	T0CON=0X93;  //TMR0 is on, PSV=16
+}//eo configTMR0::
+
+
+/***clkFunction**************************************************************
+Author:		KSangeetha
+Date:		23/10/2020
+Modified:	None
+Desc:		Timer varibale which counts the time when the game is being played and stops when the game ends
+Input: 		None
+Returns:	None
+**********************************************************************************/
+
+void clkFunction(void)
+{
+	if(ttt888.gBoard.turnCounter!=0)
+	{
+		ttt888.gBoard.sec++; //increment seconds
+		if(ttt888.gBoard.sec>SEC) //if second exceeds 60, then second is set to zero and increment minutee
+		{
+			ttt888.gBoard.sec=0;
+			ttt888.gBoard.min++;
+			if(ttt888.gBoard.min>MIN) //if minutes exceeds 60, then minute is set to zero
+			{
+				ttt888.gBoard.min=0;
+			}
+		}
+	}//eo if::	
+}//eo clkFunction::
+
+/***winProgram  **************************************************************
+Author:		KSangeetha
+Date:		16/10/2020
+Modified:	None
+Desc:		program for win condition. 	when horizontal, vertical or digonal arrays are matched, then the program condition is win
+Input: 		None
+Returns:	None
+**********************************************************************************/
+void winProgram(void)                               //if horizontal or vertical or diagonal arrays are matched, then the condition is set to win
+{
+ 	if((ttt888.gBoard.ticTacToe[0][0]=='X')&(ttt888.gBoard.ticTacToe[0][1]=='X')&(ttt888.gBoard.ticTacToe[0][2]=='X')||          //Checking win condition for player X
+	(ttt888.gBoard.ticTacToe[1][0]=='X')&(ttt888.gBoard.ticTacToe[1][1]=='X')&(ttt888.gBoard.ticTacToe[1][2]=='X')||
+	(ttt888.gBoard.ticTacToe[2][0]=='X')&(ttt888.gBoard.ticTacToe[2][1]=='X')&(ttt888.gBoard.ticTacToe[2][2]=='X')||
+
+	(ttt888.gBoard.ticTacToe[0][0]=='X')&(ttt888.gBoard.ticTacToe[1][1]=='X')&(ttt888.gBoard.ticTacToe[2][2]=='X')||
+    	(ttt888.gBoard.ticTacToe[0][2]=='X')&(ttt888.gBoard.ticTacToe[1][1]=='X')&(ttt888.gBoard.ticTacToe[2][0]=='X')||
+
+   	(ttt888.gBoard.ticTacToe[0][0]=='X')&(ttt888.gBoard.ticTacToe[1][0]=='X')&(ttt888.gBoard.ticTacToe[2][0]=='X')||
+	(ttt888.gBoard.ticTacToe[0][1]=='X')&(ttt888.gBoard.ticTacToe[1][1]=='X')&(ttt888.gBoard.ticTacToe[2][1]=='X')||
+	(ttt888.gBoard.ticTacToe[0][2]=='X')&(ttt888.gBoard.ticTacToe[0][2]=='X')&(ttt888.gBoard.ticTacToe[2][2]=='X'))
+	
+	{
+		ttt888.gBoard.winFlagX=TRUE;
+	}
+	else
+	{
+		ttt888.gBoard.winFlagX=FALSE;
+	}
+
+
+    	if((ttt888.gBoard.ticTacToe[0][0]=='O')&(ttt888.gBoard.ticTacToe[0][1]=='O')&(ttt888.gBoard.ticTacToe[0][2]=='O')||    //checking win condition for player O
+	(ttt888.gBoard.ticTacToe[1][0]=='O')&(ttt888.gBoard.ticTacToe[1][1]=='O')&(ttt888.gBoard.ticTacToe[1][2]=='O')||
+	(ttt888.gBoard.ticTacToe[2][0]=='O')&(ttt888.gBoard.ticTacToe[2][1]=='O')&(ttt888.gBoard.ticTacToe[2][2]=='O')||
+
+	(ttt888.gBoard.ticTacToe[0][0]=='O')&(ttt888.gBoard.ticTacToe[1][1]=='O')&(ttt888.gBoard.ticTacToe[2][2]=='O')||
+ 	(ttt888.gBoard.ticTacToe[0][2]=='O')&(ttt888.gBoard.ticTacToe[1][1]=='O')&(ttt888.gBoard.ticTacToe[2][0]=='O')||
+
+   	(ttt888.gBoard.ticTacToe[0][0]=='O')&(ttt888.gBoard.ticTacToe[1][0]=='O')&(ttt888.gBoard.ticTacToe[2][0]=='O')||
+	(ttt888.gBoard.ticTacToe[0][1]=='O')&(ttt888.gBoard.ticTacToe[1][1]=='O')&(ttt888.gBoard.ticTacToe[2][1]=='O')||
+	(ttt888.gBoard.ticTacToe[0][2]=='O')&(ttt888.gBoard.ticTacToe[0][2]=='O')&(ttt888.gBoard.ticTacToe[2][2]=='O'))
+	
+	{
+		ttt888.gBoard.winFlagO=TRUE;
+	}
+	else
+	{
+		ttt888.gBoard.winFlagO=FALSE;
+	}
+}//eo winProgram::
+
+/***ledOperations******************************************************
+Author:     KSangeetha
+Date:       16/10/2020     
+Modified:   None
+Desc:       Led operations to select which led turns on when which particular array
+Input:      None
+Returns:    None
+**********************************************************************************/		
+void ledOperations(void) // determines which led is to be on at which particular interval of time
+{
+	if(ttt888.gBoard.ticTacToe[0][0]=='X') //if tictactoe array of row 0 and col 0 is X, then green led 1 is on
+	{
+		LED12OP;
+		LED1ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[0][0]=='O') //if tictactoe array of row 0 and col 0 is O, then green led 2 is on
+	{
+		LED12OP;
+		LED2ON;
+	}
+    	if(ttt888.gBoard.ticTacToe[0][1]=='X') //if tictactoe array of row 0 and col 1 is X, then green led 3 is on
+	{
+		LED34OP;
+		LED3ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[0][1]=='O') //if tictactoe array of row 0 and col 0 is O, then green led 4 is on
+	{
+		LED34OP;
+		LED4ON;
+	}
+   	if(ttt888.gBoard.ticTacToe[0][2]=='X') //if tictactoe array of row 0 and col 2 is X, then green led 5 is on
+	{
+		LED56OP;
+		LED5ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[0][2]=='O') //if tictactoe array of row 0 and col 2 is O, then green led 6 is on
+	{
+		LED56OP;
+		LED6ON;
+	}
+	if(ttt888.gBoard.ticTacToe[1][0]=='X') //if tictactoe array of row 1 and col 0 is X, then green led 7 is on
+	{
+		LED78OP;
+		LED7ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[1][0]=='O') //if tictactoe array of row 1 and col 0 is O, then green led 8 is on
+	{
+		LED78OP;
+		LED8ON;
+	}
+	if(ttt888.gBoard.ticTacToe[1][1]=='X') //if tictactoe array of row 1 and col 1 is X, then green led 9 is on
+	{
+		LED910OP;
+		LED9ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[1][1]=='O') //if tictactoe array of row 1 and col 1 is O, then green led 10 is on
+	{
+		LED910OP;
+		LED10ON;
+	}
+	if(ttt888.gBoard.ticTacToe[1][2]=='X') //if tictactoe array of row 1 and col 2 is X, then green led 11 is on
+	{
+		LED1112OP;
+		LED11ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[1][2]=='O') //if tictactoe array of row 1 and col 2 is O, then green led 12 is on
+	{
+		LED1112OP;
+		LED12ON;
+	}
+	if(ttt888.gBoard.ticTacToe[2][0]=='X') //if tictactoe array of row 2 and col 0 is X, then green led 13 is on
+	{
+		LED1314OP;
+		LED13ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[2][0]=='O') //if tictactoe array of row 2 and col 0 is O, then green led 14 is on
+	{
+		LED1314OP;
+		LED14ON;
+	}
+	if(ttt888.gBoard.ticTacToe[2][1]=='X') //if tictactoe array of row 2 and col 1 is X, then green led 15 is on
+	{
+		LED1516OP;
+		LED15ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[2][1]=='O') //if tictactoe array of row 2 and col 1 is O, then green led 16 is on
+	{
+		LED1516OP;
+		LED16ON;
+	}
+	if(ttt888.gBoard.ticTacToe[2][2]=='X') //if tictactoe array of row 2 and col 2 is X, then green led 17 is on
+	{
+		LED1718OP;
+		LED17ON;
+	}
+	else if(ttt888.gBoard.ticTacToe[2][2]=='O') //if tictactoe array of row 2 and col 2 is O, then green led 18 is on
+	{
+		LED1718OP;
+		LED18ON;
+	}
+}//eo ledOperations::
+
+
+/***boardFunction******************************************************
+Author:     KSangeetha
+Date:       13/11/2020     
+Modified:   None
+Desc:       Creating a function for the tic tac toe working based on the turn count and player condition 
+Input:      None
+Returns:    None
+**********************************************************************************/
+
+void boardFunction(void)
+{
+	if(ttt888.gBoard.player==PLAYER1) //if player 1 is choosen, and row is selected, then all increment, decrement, enter functions are called to run those functions
+	{	
+		if(ttt888.turnTime==0) //(For automatic method of placing the players) if the turn time is equal to 0, then if the particular row and column is empty when checked from the start, then automatic placement of players are done accordingly from the first, turn counter is incremented, player is toggled and turn count is reset to 30
+		{
+			ttt888.turnTime=TURN;
+			if(ttt888.gBoard.ticTacToe[0][0]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[0][0]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=0;
+				colCnt=0;
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[0][1]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[0][1]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=0;
+				colCnt=1;
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[0][2]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[0][2]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=0;
+				colCnt=2;
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[1][0]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[1][0]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=1;
+				colCnt=0;
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[1][1]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[1][1]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=1;
+				colCnt=1;	
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[1][2]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[1][2]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=1;
+				colCnt=2;
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[2][0]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[2][0]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=2;
+				colCnt=0;
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[2][1]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[2][1]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=2;
+				colCnt=1;
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[2][2]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[2][2]='X';
+				playerPlacementX=TRUE;
+				x1Flag=TRUE;
+				rowCnt=2;
+				colCnt=2;
+				player='X';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+		}//eo if::			
+	}
+	else if(ttt888.gBoard.player==PLAYER2) //if the player is O
+	{
+		if(ttt888.turnTime==0) //(For automatic method of placing the players) if the turn time is equal to 0, then if the particular row and column is empty when checked from the start, then automatic placement of players are done accordingly from the first, turn counter is incremented, player is toggled and turn count is reset to 30
+		{
+			ttt888.turnTime=TURN;
+			if(ttt888.gBoard.ticTacToe[0][0]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[0][0]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=0;
+				colCnt=0;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[0][1]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[0][1]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=0;
+				colCnt=1;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[0][2]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[0][2]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=0;
+				colCnt=2;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[1][0]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[1][0]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=1;
+				colCnt=0;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[1][1]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[1][1]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=1;
+				colCnt=1;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[1][2]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[1][2]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=1;
+				colCnt=2;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[2][0]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[2][0]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=2;
+				colCnt=0;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[2][1]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[2][1]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=2;
+				colCnt=1;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+			else if(ttt888.gBoard.ticTacToe[2][2]==0xFF)
+			{
+				ttt888.gBoard.ticTacToe[2][2]='O';
+				playerPlacementO=TRUE;
+				x1Flag=TRUE;
+				rowCnt=2;
+				colCnt=2;
+				player='O';
+				ttt888.gBoard.turnCounter++;
+				ttt888.gBoard.player=!ttt888.gBoard.player;
+			}
+		}	
+	}
+}//eo boardFunction::
+					
+/***printSentence : **************************************************************
+Author:     KSangeetha
+Date:       13/11/2020
+Modified:   None
+Desc:       A function where the sentence is packaged and being sent
+Input:      None
+Returns:    None
+**********************************************************************************/
+void printSentence(void)
+{	
+	if(ttt888.gBoard.winFlagX==TRUE)
+	{
+		sprintf(gameend,"$GAMEND,%i,%i,%c,%c,%2d:%2d\0",CONTROLLER,MYADDY,'W','X',ttt888.gBoard.min,ttt888.gBoard.sec);
+	    	sprintf(gameend,"%s,%i^\0",gameend,calculateChecksum(gameend));
+		printf("\033[22;25H%s",gameend);
+		puts2USART(gameend);
+		
+	}
+	else if(ttt888.gBoard.winFlagO==TRUE)
+	{
+		sprintf(gameend,"$GAMEND,%i,%i,%c,%c,%2d:%2d\0",CONTROLLER,MYADDY,'W','O',ttt888.gBoard.min,ttt888.gBoard.sec);
+	    	sprintf(gameend,"%s,%i^\0",gameend,calculateChecksum(gameend));
+		printf("\033[22;25H%s",gameend);
+		puts2USART(gameend);
+		
+	}
+	if(ttt888.gBoard.turnCounter==9)
+	{
+		sprintf(gameend,"$GAMEND,%i,%i,%c,%c,%2d:%2d\0",CONTROLLER,MYADDY,'D','Y',ttt888.gBoard.min,ttt888.gBoard.sec);
+	   	sprintf(gameend,"%s,%i^\0",gameend,calculateChecksum(gameend));
+		printf("\033[22;25H%s",gameend);
+		puts2USART(gameend);
+	}
+	if(playerPlacementX==TRUE)
+	{
+		sprintf(plyplace,"$PLYPMT,%i,%i,%i,%i,%c\0",CONTROLLER,MYADDY,rowCnt,colCnt,'X');
+   		sprintf(plyplace,"%s,%i^\0",plyplace,calculateChecksum(plyplace));
+		printf("\033[21;25H%s",plyplace);
+		puts2USART(plyplace);
+		playerPlacementX=FALSE;
+	}
+	if(playerPlacementO==TRUE)
+	{
+		sprintf(plyplace,"$PLYPMT,%i,%i,%i,%i,%c\0",CONTROLLER,MYADDY,rowCnt,colCnt,'O');
+   		sprintf(plyplace,"%s,%i^\0",plyplace,calculateChecksum(plyplace));
+		printf("\033[21;25H%s",plyplace);
+		puts2USART(plyplace);
+		playerPlacementO=FALSE;
+	}	
+}//eo printSentence::
+
+/***resetCondition : **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       A function where the initialization of array is called inside the resetflag condition
+Input:      None
+Returns:    None
+**********************************************************************************/
+void resetCondition(void)
+{
+	if(resetFlag==TRUE)
+	{
+		initializeTtt();
+		LED12IP;
+		LED34IP;
+		LED56IP;
+		LED78IP;
+		LED910IP;
+		LED1112IP;
+		LED1314IP;
+		LED1516IP;
+		LED1718IP;
+	}
+	resetFlag=FALSE;
+}//eo resetCondition::
+  
+/***updateDisplay : **************************************************************
+Author:     KSangeetha
+Date:       23/10/2020
+Modified:   None
+Desc:       Displaying of the functions on the output screen.
+Input:      None
+Returns:    None
+**********************************************************************************/
+void updateDisplay(void)
+{ 
+	printf("\033[0;0HTicTacToe888\r\n");
+	if(ttt888.gBoard.turnCounter==0) //when turn count is equal to 0, then status will display ready to start condition, the game time here will be 00:00
+	{
+		flagready=TRUE;
+		flagpX=FALSE;
+		flagpO=FALSE;
+		flagreset=FALSE;
+		ttt888.gBoard.min=FALSE;
+		ttt888.gBoard.sec=FALSE;
+		ttt888.gBoard.winFlagX=FALSE;
+		ttt888.gBoard.winFlagO=FALSE;
+		printf("\033[0;50HStatus:Ready to start\r\n");
+		printf("\033[0;25HGame Time:%2d:%2d\r\n",ttt888.gBoard.min,ttt888.gBoard.sec);
+	}
+	if(flagpX==TRUE || flagpO==TRUE) //if play flags are true, then the status will display the game is being played
+	{
+		ttt888.turnTime--;
+		flagready=FALSE;
+		flagreset=FALSE;
+		printf("\033[0;50HStatus:Playing\r\n");
+		printf("\033[0;25HGame Time:%2d:%2d\r\n",ttt888.gBoard.min,ttt888.gBoard.sec);
+	}
+	if(ttt888.gBoard.turnCounter!=0) //when turn count is not zero ie, when turn count is greater than 0 and less than 10, then play flags are true
+	{
+		flagpX=TRUE;
+		flagpO=TRUE;
+		if(flagpX==TRUE)// if play flag of player X is true, then it checks for the win condition. If win flag is true, then status flag is set to win. 
+		{
+			if(ttt888.gBoard.winFlagX==TRUE)
+			{
+				flagpX=FALSE;
+				flagpO=FALSE;
+				printf("\033[0;50HStatus:Win\r\n");
+				printf("\033[20;0HCongratulations, PLAYER X has won"); 
+				printf("\033[0;25HGame Time:%2d:%2d\r\n",ttt888.gBoard.min,ttt888.gBoard.sec); //During playing condition, the game time starts counting until the win flag is set to true
+			}
+		}
+		if(flagpO==TRUE) // if play flag of player O is true, then it checks for the win condition. If win flag is true, then status flag is set to win. 
+		{	
+			if(ttt888.gBoard.winFlagO==TRUE)
+			{
+				flagpX=FALSE;
+				flagpO=FALSE;
+				ttt888.gBoard.min=FALSE;
+				ttt888.gBoard.sec=FALSE;
+				printf("\033[0;50HStatus:Win\r\n");
+				printf("\033[20;0HCongratulations, PLAYER O has won"); //if the above conditions are met, then player X will win
+				printf("\033[0;25HGame Time:%2d:%2d\r\n",ttt888.gBoard.min,ttt888.gBoard.sec);//During playing condition, the game time starts counting until the win flag is set to true
+			}
+		}
+	}
+	else if(ttt888.gBoard.turnCounter>=9)
+	{
+		gameendFlag=TRUE;
+	}		
+	
+    	if(ttt888.gBoard.player==PLAYER1)
+   	{
+       	printf("\033[2;0HPlayer:X\t\r\n");
+   	}
+   	else 
+   	{
+       	printf("\033[2;0HPlayer:O\t\r\n");
+   	}
+
+	printf("\033[2;25HTurn Count:%d\r\n",ttt888.gBoard.turnCounter);
+
+	if(ttt888.select==0) //if select is 0, then row is selected
+	{
+		printf("\033[3;0HRow\r\n");
+	}
+	else //if select is 1, then column is selected
+	{
+		printf("\033[3;0HCol\r\n");
+	}
+	if(ttt888.select==0)
+	{
+    		printf("\033[4;0HSelect:%d\r\n",rowCnt); //if select is 0, then row count would be printed in select
+	}
+	else
+	{
+		printf("\033[4;0HSelect:%d\r\n",colCnt);//if select is 1, then col count would be printed in select
+	}
+	printf("\033[3;25HTurn Time:%d\r\n",ttt888.turnTime);
+	printf("\033[6;25HC  O  L  U  M  N\r\n");
+	printf("\033[8;25H0 \033[8;50H1\033[8;75H2\r\n");
+	printf("\033[9;15H0 \033[9;25H%c\t\t| \033[9;50H%c\t\t| \033[9;75H%c \r\n",ttt888.gBoard.ticTacToe[0][0],ttt888.gBoard.ticTacToe[0][1],ttt888.gBoard.ticTacToe[0][2]);
+	printf("\033[11;5HR\t\t------------------------------------------------------------------------------\r\n");
+	printf("\033[13;5HO\033[13;15H1 \033[13;25H%c\t\t| \033[13;50H%c\t\t| \033[13;75H%c \r\n",ttt888.gBoard.ticTacToe[1][0],ttt888.gBoard.ticTacToe[1][1],ttt888.gBoard.ticTacToe[1][2]);
+	printf("\033[15;5HW\t\t------------------------------------------------------------------------------\r\n");
+	printf("\033[17;15H2 \033[17;25H%c\t\t| \033[17;50H%c\t\t| \033[17;75H%c \r\n",ttt888.gBoard.ticTacToe[2][0],ttt888.gBoard.ticTacToe[2][1],ttt888.gBoard.ticTacToe[2][2]);
+}	//eo updateDisplay::
+
+
+
+/***executeSentence: **************************************************************
+Author:     KSangeetha
+Date:       11/12/2020
+Modified:   None
+Desc:       The function which executes the information sent from the lpc1768
+Input:      None
+Returns:    None
+**********************************************************************************/
+void executeSentence()
+{
+    if(atoi(tokens[ADDYTO])==CONTROLLER)
+    {
+        if(atoi(tokens[ADDYFM])==ADDRESS)
+        {
+            if(strcmp(tokens[CMDSTMT],ply)==0)
+            {
+                ttt888.gBoard.ticTacToe[atoi(tokens[GBROW])][atoi(tokens[GBCOL])]=*tokens[GBCHAR];
+                ttt888.gBoard.turnCounter++;
+            }
+            if(strcmp(tokens[CMDSTMT],rst)==0)
+            {
+                resetFlag=TRUE;
+            }
+        }
+    }
+}//eo executeSentence::
+
+
+/*** initializeSystem: ***********************************************************
+Author:     CTalbot
+Date:       14 Sept, 2016
+Modified:   KSangeetha 
+Desc:       Initalizing all the functions
+Input:      None
+Returns:    None
+**********************************************************************************/
+void initializeSystem(void) 
+{
+	set_osc_p18f45k22_4MHz(); 
+	portConfig();
+	serialConfig();
+	initializeTtt();
+	configInterrupts();
+	configTMR0(TMR01SEC);	 
+}   
+// eo initializeSystem::**********************************************************
+
+
+/***ISR: **************************************************************
+Author:		KSangeetha
+Date:		11/12/2020
+Modified:	None
+Desc:		Interrupt service routine function where the collectSentence is called when the interrupt is triggered
+Input: 		None
+Returns:	None
+**********************************************************************************/
+#pragma interrupt isr
+
+void isr(void)
+{
+	if(PIR3bits.RC2IF)
+	{
+		collectSentence();		
+	}
+	INTCON|=0xC0;
+}//eo isr::
+
+/*********************************************************************************
+***** MAIN FUNCTION **************************************************************
+**********************************************************************************/
+
+
+int main()
+{
+	initializeSystem();	
+	while(1)
+	{
+		if(TMR0FLAG) //if timer is 1 sec
+		{
+			ledOperations();
+			resetTMR0(TMR01SEC);	
+			clkFunction();
+			boardFunction();
+			winProgram();
+			printSentence();
+			resetCondition();
+			if(sentenceReady==TRUE)
+			{
+				validateSentence(rxBuf);
+				parseSentence(rxBuf);
+				executeSentence();
+				sentenceReady=FALSE;	
+			}	
+			updateDisplay();
+		}//eo if::	
+    } //eo while::		
+}//eo main::
